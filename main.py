@@ -4,7 +4,7 @@ from docx import Document
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import InlineKeyboardButton, LinkPreviewOptions, BufferedInputFile
+from aiogram.types import InlineKeyboardButton, LinkPreviewOptions, BufferedInputFile, LabeledPrice, PreCheckoutQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from supabase import create_client, Client
 from openai import AsyncOpenAI
@@ -66,7 +66,6 @@ def create_docx(text: str, title: str):
 
 # 3. ОБРАБОТЧИКИ
 
-# --- ОБНОВЛЕННЫЙ ОНБОРДИНГ ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     try:
@@ -76,22 +75,21 @@ async def cmd_start(message: types.Message):
     welcome_text = (
         "👋 **Добро пожаловать в JobHack AI!**\n\n"
         "Я — твой личный карьерный чит-код. Я помогу найти лучшие вакансии на HH.ru и напишу за тебя идеальное сопроводительное письмо, от которого HR не сможет отказаться.\n\n"
-        "🛠 **Как это работает (3 простых шага):**\n"
-        "1️⃣ **Отправь мне свое резюме** файлом в формате `.pdf` (можно просто скачать с HH.ru) ИЛИ напиши текстом, кто ты и какой у тебя опыт.\n"
-        "2️⃣ Я проанализирую твой опыт и выдам список самых подходящих свежих вакансий.\n"
+        "🎁 У тебя есть **3 бесплатных генерации**.\n\n"
+        "🛠 **Как это работает:**\n"
+        "1️⃣ **Отправь мне свое резюме** файлом в формате `.pdf` ИЛИ напиши текстом, кто ты и какой у тебя опыт.\n"
+        "2️⃣ Я проанализирую твой опыт и выдам список свежих вакансий.\n"
         "3️⃣ Выбери любую вакансию, и я за 10 секунд сгенерирую пробивной отклик и пришлю его в готовом `.docx` файле.\n\n"
         "👇 **Жду твой PDF или текст прямо сюда!**"
     )
     await message.answer(welcome_text, parse_mode="Markdown")
 
-# --- ДОБАВЛЕНА КОМАНДА HELP ---
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     help_text = (
         "💡 **Инструкция к JobHack AI**\n\n"
         "• **Чтобы начать поиск:** просто отправь мне файл `.pdf` с твоим резюме или напиши текстом свою профессию и опыт.\n"
-        "• **Если вакансии не нравятся:** нажми кнопку «Показать еще вакансии» под списком.\n"
-        "• **Если не нравится текст письма:** нажми «🔄 Переписать письмо» под сгенерированным откликом.\n\n"
+        "• **Если закончились генерации:** бот автоматически предложит докупить пакет откликов.\n\n"
         "Остались вопросы или нашел баг? Пиши фаундеру."
     )
     await message.answer(help_text, parse_mode="Markdown")
@@ -127,32 +125,49 @@ async def handle_text(message: types.Message):
 
 async def send_vacancies_block(message_or_call, query: str, page: int, is_edit: bool = False, status_msg: types.Message = None):
     vacs = await fetch_hh(query, page)
-    if not vacs: 
+    if not vacs:
         text = "😢 Больше подходящих вакансий по этому запросу не найдено."
         if is_edit:
             return await message_or_call.message.edit_text(text)
         else:
             return await (status_msg or message_or_call).edit_text(text) if status_msg else message_or_call.answer(text)
-    
+
     builder = InlineKeyboardBuilder()
-    text = f"🎯 **Топ-3 вакансии (Страница {page+1}):**\n\n"
-    
+
+    # ВОТ ТУТ МАГИЯ: Заголовок теперь динамический (подстраивается под длину списка vacs)
+    text = f"🎯 **Топ-{len(vacs)} вакансий (Страница {page+1}):**\n\n"
+
     for i, v in enumerate(vacs):
         v_url = f"https://hh.ru/vacancy/{v['id']}"
         text += f"{i+1}. **[{v['name']}]({v_url})** в {v.get('employer', {}).get('name')}\n"
         builder.add(InlineKeyboardButton(text=f"Сгенерировать отклик {i+1}", callback_data=f"apply_{v['id']}"))
-    
+
     builder.adjust(1)
     builder.row(InlineKeyboardButton(text="➡️ Показать еще вакансии", callback_data=f"more_{page+1}"))
-    
+
     if is_edit:
-        await message_or_call.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=LinkPreviewOptions(is_disabled=True))
+        await message_or_call.message.edit_text(
+            text,
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown",
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+        )
     else:
         target = status_msg if status_msg else message_or_call
-        if hasattr(target, 'edit_text'):
-            await target.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=LinkPreviewOptions(is_disabled=True))
+        if hasattr(target, "edit_text"):
+            await target.edit_text(
+                text,
+                reply_markup=builder.as_markup(),
+                parse_mode="Markdown",
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
         else:
-            await target.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown", link_preview_options=LinkPreviewOptions(is_disabled=True))
+            await target.answer(
+                text,
+                reply_markup=builder.as_markup(),
+                parse_mode="Markdown",
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
 
 @dp.callback_query(F.data.startswith("more_"))
 async def handle_more_vacancies(callback: types.CallbackQuery):
@@ -168,32 +183,53 @@ async def handle_more_vacancies(callback: types.CallbackQuery):
         logger.error(f"More vacs error: {e}")
         await callback.message.edit_text("❌ Ошибка при загрузке новых вакансий.")
 
-@dp.callback_query(F.data.startswith("apply_"))
-async def handle_apply(callback: types.CallbackQuery):
-    await callback.answer() 
-    v_id = callback.data.split("_")[1]
-    status_msg = await callback.message.answer(
-        "⏳ **JobHack AI** анализирует вакансию и пишет оффер...\nОбычно это занимает 5-10 секунд.", 
-        parse_mode="Markdown"
-    )
-    await generate_and_send_cover(callback.from_user.id, v_id, status_msg)
-
-@dp.callback_query(F.data.startswith("reapply_"))
-async def handle_reapply(callback: types.CallbackQuery):
+# --- ПРОВЕРКА ЛИМИТОВ И ОПЛАТА ---
+@dp.callback_query(F.data.startswith("apply_") | F.data.startswith("reapply_"))
+async def handle_apply_and_reapply(callback: types.CallbackQuery):
     await callback.answer()
     v_id = callback.data.split("_")[1]
-    await callback.message.edit_text(
-        "⏳ **JobHack AI** придумывает новый вариант...\nПодожди пару секунд.", 
-        parse_mode="Markdown"
-    )
-    await generate_and_send_cover(callback.from_user.id, v_id, callback.message)
+    user_id = callback.from_user.id
 
-async def generate_and_send_cover(user_id: int, v_id: str, message_to_edit: types.Message):
+    # 1. Достаем лимиты и резюме
+    res = supabase.table("users").select("resume_text, generations_left").eq("tg_id", user_id).execute()
+    user_data = res.data[0] if res.data else {}
+    gens_left = user_data.get('generations_left', 0)
+    resume = user_data.get('resume_text', 'Кандидат')
+
+    # 2. Если лимитов нет — выставляем счет
+    if gens_left <= 0:
+        prices = [LabeledPrice(label="20 откликов", amount=100)] # 100 Telegram Stars
+        await bot.send_invoice(
+            chat_id=user_id,
+            title="Пакет: 20 идеальных откликов",
+            description="Бесплатные попытки закончились. Оплати 100 ⭐ и получи сразу 20 пробивных откликов!",
+            payload="buy_20_covers",
+            provider_token="", # Оставляем пустым, так как используем внутреннюю валюту (Звезды)
+            currency="XTR",
+            prices=prices
+        )
+        return
+
+    # 3. Если лимиты есть — выводим загрузочный текст
+    if callback.data.startswith("apply_"):
+        status_msg = await callback.message.answer(
+            "⏳ **JobHack AI** анализирует вакансию и пишет оффер...\nОбычно это занимает 5-10 секунд.", 
+            parse_mode="Markdown"
+        )
+    else:
+        status_msg = callback.message
+        await status_msg.edit_text(
+            "⏳ **JobHack AI** придумывает новый вариант...\nПодожди пару секунд.", 
+            parse_mode="Markdown"
+        )
+
+    # 4. Передаем в генерацию (прокидываем актуальные данные, чтобы не лезть в БД еще раз)
+    await generate_and_send_cover(user_id, v_id, status_msg, resume, gens_left)
+
+
+async def generate_and_send_cover(user_id: int, v_id: str, message_to_edit: types.Message, resume: str, gens_left: int):
     v_url = f"https://hh.ru/vacancy/{v_id}"
     try:
-        res = supabase.table("users").select("resume_text").eq("tg_id", user_id).execute()
-        resume = res.data[0]['resume_text'] if res.data else "Кандидат"
-        
         async with httpx.AsyncClient(timeout=40.0) as client:
             v = (await client.get(f"https://api.hh.ru/vacancies/{v_id}")).json()
         
@@ -207,6 +243,10 @@ async def generate_and_send_cover(user_id: int, v_id: str, message_to_edit: type
         )
         
         raw_text = ai_res.choices[0].message.content
+
+        # СПИСЫВАЕМ ЛИМИТ
+        new_gens = gens_left - 1
+        supabase.table("users").update({"generations_left": new_gens}).eq("tg_id", user_id).execute()
         
         final_response = (
             f"✅ **Твой отклик на {v_title}:**\n\n"
@@ -215,7 +255,7 @@ async def generate_and_send_cover(user_id: int, v_id: str, message_to_edit: type
         )
         
         builder = InlineKeyboardBuilder()
-        builder.add(InlineKeyboardButton(text="🔄 Переписать письмо", callback_data=f"reapply_{v_id}"))
+        builder.add(InlineKeyboardButton(text=f"🔄 Переписать (Осталось: {new_gens})", callback_data=f"reapply_{v_id}"))
         
         await message_to_edit.edit_text(
             final_response, 
@@ -236,9 +276,28 @@ async def generate_and_send_cover(user_id: int, v_id: str, message_to_edit: type
         logger.error(f"❌ Ошибка генерации: {e}")
         await message_to_edit.edit_text("❌ Произошла ошибка генерации. Попробуй еще раз.")
 
+# --- ОБРАБОТКА УСПЕШНОГО ПЛАТЕЖА ---
+@dp.pre_checkout_query()
+async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def successful_payment_handler(message: types.Message):
+    # Достаем текущие лимиты
+    res = supabase.table("users").select("generations_left").eq("tg_id", message.from_user.id).execute()
+    current_gens = res.data[0].get('generations_left', 0) if res.data else 0
+    
+    # Начисляем +20
+    supabase.table("users").update({"generations_left": current_gens + 20}).eq("tg_id", message.from_user.id).execute()
+    
+    await message.answer(
+        "🎉 **Оплата прошла успешно!**\nТебе начислено 20 генераций. Смело возвращайся к списку вакансий и сноси крышу HR-ам!", 
+        parse_mode="Markdown"
+    )
+
 # 4. ЗАПУСК
 async def main():
-    logger.info("🚀 Бот запущен (Добавлен Onboarding и команда /help)")
+    logger.info("🚀 Бот запущен (Добавлена монетизация через Stars)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

@@ -1,5 +1,8 @@
 # Секреты и ключи
 .env
+credentials.json
+token.json
+client_secrets.json
 
 # Виртуальное окружение
 venv/
@@ -12,3 +15,5 @@ __pycache__/
 # Сгенерированные файлы (чтобы не мусорить в репо)
 *.docx
 *.pdf
+*.mp4
+temp_audio.mp3
