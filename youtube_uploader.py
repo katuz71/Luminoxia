@@ -1,4 +1,5 @@
 import os
+import time
 import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -10,6 +11,7 @@ from google.oauth2.credentials import Credentials
 
 # --- НАСТРОЙКИ ---
 SHEET_NAME = "Jobhakai"
+WORKSHEET_NAME = "Biohack"
 CREDENTIALS_FILE = "credentials.json"          # Ключ от таблиц
 CLIENT_SECRETS_FILE = "client_secrets.json"    # Ключ от YouTube
 YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
@@ -58,8 +60,8 @@ def upload_video(youtube, filename, title, description, iso_date):
         'snippet': {
             'title': title,
             'description': description,
-            'tags': ['работа', 'hr', 'айти', 'jobhack', 'shorts', 'собеседование'],
-            'categoryId': '27' # 27 - Образование, 22 - Люди и Блоги
+            'tags': ['biohacking', 'science', 'health', 'shorts'],
+            'categoryId': '28' # Science & Technology
         },
         'status': {
             'privacyStatus': 'private', # Обязательно private для отложенной публикации
@@ -84,8 +86,69 @@ def upload_video(youtube, filename, title, description, iso_date):
     print(f"✅ ВИДЕО УСПЕШНО ЗАГРУЖЕНО! ID: {response['id']}")
     return response['id']
 
-def main():
-    print("🔄 Эта функция теперь должна вызываться через autoposter.py")
+def process_uploads():
+    print("🤖 [YouTube Uploader] Проверка новых видео для загрузки...")
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+    client = gspread.authorize(creds)
     
+    try:
+        sheet = client.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
+        values = sheet.get_all_values()
+        youtube = get_youtube_service()
+        
+        debug_statuses = []
+        found_task = False
+        
+        for index, row in enumerate(values, start=1):
+            if index == 1:
+                continue # пропускаем заголовки
+                
+            status = str(row[4]).strip().upper() if len(row) > 4 else ""
+            debug_statuses.append(f"Строка {index}: '{status}'")
+            
+            # Берет только строки, где Status == "VIDEO_DONE" (5-я колонка)
+            if status != "VIDEO_DONE":
+                continue
+                
+            found_task = True
+            
+            # 3-я колонка = title (индекс 2), 4-я колонка = desc (индекс 3), 6-я колонка = дата (индекс 5)
+            title = str(row[2]).strip() if len(row) > 2 else "Biohack Shorts"
+            desc = str(row[3]).strip() if len(row) > 3 else "#shorts"
+            date = str(row[5]).strip() if len(row) > 5 else datetime.datetime.now().strftime("%d.%m.%Y")
+            
+            iso_date = format_youtube_date(date)
+            filename = f"assets/ready_videos/video_{index}.mp4"
+            
+            if not os.path.exists(filename):
+                print(f"⚠️ Файл {filename} не найден, хотя статус VIDEO_DONE. Пропускаю...")
+                continue
+                
+            print(f"✅ Найдено видео для загрузки: {filename} (Строка {index})")
+            
+            try:
+                upload_video(youtube, filename, title, desc, iso_date)
+                
+                # При успехе меняет Status в 5-й колонке на "SCHEDULED"
+                sheet.update_cell(index, 5, "SCHEDULED")
+                print(f"🚀 Видео загружено! Статус обновлен на SCHEDULED.")
+                break # Обязательно прерываем цикл, берем 1 видео за запуск
+            except Exception as e:
+                print(f"❌ Ошибка загрузки видео {filename}: {e}")
+                break # Если ошибка, статус не менять, выходим
+                
+        if not found_task:
+            print(f"🔍 Отладка статусов для VIDEO_DONE: {', '.join(debug_statuses)}")
+                
+    except Exception as e:
+        print(f"❌ [GSheets] Ошибка доступа к таблице: {e}")
+
+def main():
+    while True:
+        process_uploads()
+        print("💤 Ожидание 10 минут...")
+        time.sleep(600)
+
 if __name__ == '__main__':
     main()
