@@ -1,78 +1,65 @@
-# 🚀 AutoShorts Boilerplate — Автономный Конвейер Контента
+# Luminoxia — Automated Content Pipeline
 
-Добро пожаловать в **AutoShorts Boilerplate**! Это профессиональный шаблон для создания полностью автономных медиа-каналов. Система сама ищет информацию, пишет сценарии, озвучивает их, монтирует динамичные Shorts/Reels и публикует их в Telegram и YouTube.
+## Architecture
 
-Данный проект — это готовый **"скелет"**, который можно легко масштабировать под любую нишу: от крипты и психологии до новостей и юмора.
+    ┌─────────────────────────────────────────────────────┐
+    │                    CRON (daily 16:00)                │
+    │                    start_all.py                      │
+    └──────────────┬──────────────┬──────────────┬────────┘
+                   │              │              │
+                   v              v              v
+            ┌──────────┐  ┌──────────────┐  ┌──────────────┐
+            │ Step 1   │  │   Step 2     │  │   Step 3     │
+            │ content_ │  │  shorts_     │  │  youtube_    │
+            │generator │  │  maker.py    │  │  uploader.py │
+            └────┬─────┘  └──────┬───────┘  └──────┬───────┘
+                 │               │                 │
+                 v               v                 v
+         ┌───────────────┐ ┌──────────┐    ┌──────────────┐
+         │ OpenAI GPT-4o │ │ TTS +    │    │ YouTube API  │
+         │ + DALL-E 3    │ │ FFmpeg   │    │ (OAuth2)     │
+         └───────┬───────┘ └────┬─────┘    └──────────────┘
+                 │              │
+                 v              v
+         ┌───────────────┐ ┌──────────┐
+         │  WordPress    │ │  Google  │
+         │  REST API     │ │  Sheets  │
+         │  + Rank Math  │ │ TopicMap │
+         └───────────────┘ └──────────┘
 
----
+## Pipeline Flow
 
-## 🏗 1. Архитектура (Pipeline)
-Все процессы управляются через **Google Таблицу**, которая служит "мозгом" и базой данных. Главный скрипт `start_all.py` запускает модули по цепочке, меняя статусы строк:
+### Step 1: content_generator.py
+1. Reads next TODO topic from Google Sheets TopicMap tab
+2. Fetches internal links from WordPress REST API for cross-linking
+3. Generates SEO article (1500-2500 words) via OpenAI GPT-4o
+4. Generates featured image via DALL-E 3
+5. Publishes to WordPress via custom REST endpoint
+6. Sets Rank Math SEO meta (focus keyword, meta description, SEO title)
+7. Marks topic as DONE in TopicMap
+8. Writes YouTube Shorts data to Google Sheets
 
-1.  **Парсер (`pubmed_parser.py`)**: Ищет актуальный контент (изначально PubMed), генерирует через OpenAI заголовок, текст и сценарий. Создает строку со статусом **`NEW`**.
-2.  **Telegram Постер (`tg_autoposter.py`)**: Берет строки `NEW`, публикует текстовый пост в ваш канал и меняет статус на **`POSTED`**.
-3.  **Shorts Maker (`shorts_maker.py`)**: Берет строки `POSTED`, генерирует озвучку (TTS), накладывает субтитры и монтирует видео. Меняет статус на **`VIDEO_DONE`**.
-4.  **YouTube Uploader (`youtube_uploader.py`)**: Заливает готовое видео из папки `ready_videos` на YouTube Shorts и меняет статус на **`PUBLISHED`**.
+### Step 2: shorts_maker.py
+1. Reads NEW rows from Google Sheets
+2. Generates voiceover via TTS
+3. Creates video with subtitles using FFmpeg
+4. Marks row as READY
 
----
+### Step 3: youtube_uploader.py
+1. Reads READY rows from Google Sheets
+2. Uploads video to YouTube via API (OAuth2)
+3. Marks row as UPLOADED
 
-## 🤖 2. ВАЖНО: Правила для ИИ (AI Context)
-*Этот раздел критически важен для будущих нейросетей-разработчиков и стабильности системы на слабых серверах.*
+## Topic Strategy
+- Category: B2B Lead Generation (WP Category ID: 15)
+- Structure: Pillar + Cluster model
+- Publishing: 1 article/day at 16:00 UTC
 
-### 🚀 Оптимизация под слабый сервер (2 CPU / 4GB RAM)
-Чтобы избежать **OOM Killer (ошибка -9)**, придерживайтесь следующих правил:
-*   **MoviePy**: Использовать строго `threads=2` и `preset="ultrafast"` при рендеринге (`write_videofile`).
-*   **Фоны**: Использовать только вертикальные видео (1080x1920) размером до **30 МБ**. Никаких 4K-исходников!
-*   **Кодировка**: Во всех `.py` файлах первой строкой ОБЯЗАТЕЛЬНО должна быть:
-    ```python
-    # -*- coding: utf-8 -*-
-    ```
-    Без этого Linux-сервер может упасть при обработке кириллицы.
+## Tech Stack
+- Python 3.12, OpenAI API (GPT-4o + DALL-E 3)
+- WordPress REST API + Custom Endpoint + Rank Math SEO
+- Google Sheets API (gspread + oauth2client)
+- YouTube Data API v3, FFmpeg, Cron
 
-### 📐 Верстка и Дизайн
-*   **Safe Zones (Shorts)**: Не менять координаты! 
-    *   **Хук (Заголовок)**: `('center', 0.25)` (relative=True) — верхняя часть.
-    *   **Субтитры**: `('center', 0.75)` (relative=True) — нижняя часть.
-*   **ImageMagick**: В коде жестко прописан путь к бинарнику в Linux: `/usr/bin/convert`.
-
----
-
-## 📈 3. Инструкция по масштабированию (Новая ниша)
-Хотите запустить канал про Крипту, Психологию или Факты? Следуйте этому гайду:
-
-### Шаг 1: Копирование и Очистка
-*   Скопируйте всю папку проекта.
-*   Очистите папки: `assets/backgrounds/`, `ready_videos/`, `temp/`.
-*   Загрузите 5-10 новых фоновых видео по вашей тематике в `assets/backgrounds/`.
-
-### Шаг 2: Настройка окружения (`.env`)
-Отредактируйте файл `.env`, прописав:
-*   Новые ключи API (OpenAI, Google, TG Bot).
-*   **PROMPT**: Обучите ИИ писать сценарии в стиле вашей новой ниши.
-*   **SHEET_ID**: Ссылка на новую Google Таблицу для этой ниши.
-
-### Шаг 3: Адаптация Парсера
-Замените `pubmed_parser.py` своим скриптом (например, `reddit_parser.py` или `news_parser.py`). Главное, чтобы он записывал в таблицу:
-*   `Title` (для YouTube/TG)
-*   `Content` (для сценария)
-*   `Status` = **`NEW`**
-
-### Шаг 4: Автоматизация (Cron)
-Настройте запуск на Linux сервере (например, 2 раза в день):
-```bash
-# crontab -e
-0 9,21 * * * cd /path/to/project && /usr/bin/python3 start_all.py >> cron.log 2>&1
-```
-
----
-
-## 🛠 Технический стек
-*   **Python 3.10+**
-*   **MoviePy** (Монтаж видео)
-*   **OpenAI API** (Сценарии и TTS)
-*   **Google Sheets API** (База данных)
-*   **Google YouTube API** (Заливка видео)
-*   **Python-telegram-bot** (Дистрибуция)
-
----
-*Сделано с ❤️ для автоматизации контента. Удачного фарма просмотров!*
+## Server
+- VPS: 2 CPU / 4 GB RAM, Ubuntu, Hostinger

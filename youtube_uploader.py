@@ -145,7 +145,14 @@ def process_uploads():
                         time.sleep(5)
                         sheet.update_cell(index, 5, "SCHEDULED")
                         print(f"🚀 Статус обновлен со второй попытки.")
-                
+                                # Удаляем видео с сервера после успешной загрузки
+                if video_id and os.path.exists(filename):
+                    try:
+                        os.remove(filename)
+                        print(f"🗑️ Видео {filename} удалено с сервера.")
+                    except Exception as e_del:
+                        print(f"⚠️ Не удалось удалить {filename}: {e_del}")
+
                 break # По одному за раз
                 
             except Exception as e:
