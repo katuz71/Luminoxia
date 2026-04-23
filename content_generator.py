@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+Universal Content Generator for Luminoxia & BotProof.
+Generates SEO-optimized blog posts and video data for the pipeline.
+Configuration is driven entirely by .env — one script, two projects.
+"""
+
 import os
 import json
 import random
@@ -8,8 +15,9 @@ import html
 import gspread
 from openai import OpenAI
 from dotenv import load_dotenv
+from oauth2client.service_account import ServiceAccountCredentials
 
-# Setup logging with UTF-8 to prevent Windows cp1251 Unicode errors
+# ── Logging ──────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -20,194 +28,275 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ContentGenerator")
 
+# ── Config from .env ─────────────────────────────────────
 load_dotenv(override=True)
 
-# Configuration keys
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip(" '\"\n\r")
-WP_URL = os.getenv("WP_URL", "https://luminoxia.com").rstrip("/")
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Luminoxia")
-GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Luminoxia")
-GOOGLE_CREDENTIALS_FILE = "credentials.json"
-
-# Наш секретный ключ от созданного бэкдора
-WP_SECRET_TOKEN = "luminoxia_god_mode" 
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY", "").strip(" '\"\n\r")
+WP_URL           = os.getenv("WP_URL", "").rstrip("/")
+WP_USER          = os.getenv("WP_USER", "")
+WP_APP_PASS      = os.getenv("WP_APP_PASS", "")
+SHEET_NAME       = os.getenv("GOOGLE_SHEET_NAME", "Jobhakai")
+WORKSHEET_NAME   = os.getenv("GOOGLE_WORKSHEET_NAME", "Luminoxia")
+WP_CATEGORY_ID   = int(os.getenv("WP_CATEGORY_ID", "1"))
+NICHE            = os.getenv("NICHE", "b2b-lead-generation")
+CREDENTIALS_FILE = "credentials.json"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- CONFIGURATION & PROMPTS ---
-TOPICS = [
-    "How I made money by scraping B2B leads",
-    "Secret automation tools your competitors use",
-    "Stop wasting time: Automate your PC tasks",
-    "How to build a client list for free in 5 minutes",
-    "The web scraping trick that saves 10 hours a week"
-]
+# ── Niche-specific topic seeds ───────────────────────────
+# GPT will use these as inspiration to generate unique long-tail topics
+TOPIC_SEEDS = {
+    "b2b-lead-generation": [
+        "web scraping for B2B lead generation",
+        "cold email outreach automation",
+        "Google Maps scraping for local leads",
+        "email verification and list cleaning",
+        "building prospect lists without paid tools",
+        "LinkedIn scraping for sales teams",
+        "data enrichment for outbound sales",
+        "cold email deliverability and spam filters",
+        "lead scoring with scraped data",
+        "competitor analysis through web scraping",
+        "extracting decision-maker contacts",
+        "automating follow-up email sequences",
+        "B2B sales pipeline automation",
+        "scraping business directories for leads",
+        "ROI of automated lead generation vs manual"
+    ],
+    "ai-for-business": [
+        "AI chatbots replacing customer support teams",
+        "automating business workflows with AI agents",
+        "cost savings from AI automation in small business",
+        "AI-powered lead qualification",
+        "using GPT for automated content creation",
+        "AI voice agents for appointment booking",
+        "replacing manual data entry with AI",
+        "AI tools for small business owners",
+        "building no-code AI automations",
+        "AI customer service vs human support costs",
+        "predictive analytics for business decisions",
+        "automating social media with AI",
+        "AI-powered CRM and sales automation",
+        "how AI agents handle repetitive business tasks",
+        "ROI of implementing AI in operations"
+    ]
+}
 
-def fetch_live_links_from_wp():
-    """
-    Автоматически парсит страницы и записи, исключая технический мусор.
-    """
-    logger.info("🌍 Подтягиваю актуальные ссылки с Luminoxia.com...")
-    live_links = []
-    
-    # 🔥 ЧЕРНЫЙ СПИСОК (Слова-маркеры технических страниц)
-    STOP_WORDS = ["privacy", "policy", "terms", "contact", "about", 
-        "cart", "checkout", "my-account", "logout", "login", 
-        "register", "lost-password", "reset", "pricing"]
-
-    def is_valid_link(title, link):
-        text_to_check = (title + " " + link).lower()
-        for word in STOP_WORDS:
-            if word in text_to_check:
-                return False
-        return True
-
+# ── Helper: get published post titles to avoid duplicates ─
+def get_published_titles():
+    """Fetch all published post titles from WordPress to prevent topic duplication."""
+    titles = set()
     try:
-        # Тянем страницы
-        pages_res = requests.get(f"{WP_URL}/wp-json/wp/v2/pages?status=publish&per_page=50&_fields=title,link", timeout=10)
-        if pages_res.status_code == 200:
-            for page in pages_res.json():
-                title = html.unescape(page.get('title', {}).get('rendered', 'Page'))
-                link = page.get('link', '')
-                if is_valid_link(title, link):
-                    live_links.append(f"{title}: {link}")
-
-        # Тянем статьи блога
-        posts_res = requests.get(f"{WP_URL}/wp-json/wp/v2/posts?status=publish&per_page=50&_fields=title,link", timeout=10)
-        if posts_res.status_code == 200:
-            for post in posts_res.json():
-                title = html.unescape(post.get('title', {}).get('rendered', 'Post'))
-                link = post.get('link', '')
-                if is_valid_link(title, link):
-                    live_links.append(f"{title}: {link}")
-                
+        page = 1
+        while True:
+            resp = requests.get(
+                f"{WP_URL}/wp-json/wp/v2/posts",
+                params={"per_page": 100, "page": page, "status": "publish,draft", "_fields": "title"},
+                auth=(WP_USER, WP_APP_PASS),
+                timeout=15
+            )
+            if resp.status_code != 200 or not resp.json():
+                break
+            for post in resp.json():
+                titles.add(html.unescape(post["title"]["rendered"]).lower().strip())
+            page += 1
     except Exception as e:
-        logger.error(f"❌ Ошибка при получении ссылок с сайта: {e}")
-
-    # Если после фильтрации или ошибки список пуст — даем железный фоллбэк
-    if not live_links:
-        logger.warning("Использую резервную ссылку (Homepage).")
-        live_links = [f"Homepage: {WP_URL}/"]
-
-    logger.info(f"✅ Успешно загружено {len(live_links)} чистых целевых ссылок.")
-    return live_links
+        logger.warning(f"Could not fetch existing titles: {e}")
+    logger.info(f"📚 Found {len(titles)} existing posts on WordPress.")
+    return titles
 
 
-def generate_ai_content(topic, available_links):
-    logger.info(f"--- STEP 1 & 2: Generating content for topic: '{topic}' ---")
-    
-    # ПИТОН САМ ВЫБИРАЕТ 1 ССЫЛКУ ИЗ ЖИВЫХ ССЫЛОК САЙТА
-    selected_link = random.choice(available_links)
-    logger.info(f"Selected link for this post: {selected_link}")
+# ── Helper: get live internal links for cross-linking ─────
+def fetch_live_links():
+    """Fetch published pages and posts for internal linking."""
+    links = []
+    STOP_WORDS = ["privacy", "policy", "terms", "contact", "about",
+                  "cart", "checkout", "my-account", "logout", "login",
+                  "register", "lost-password", "reset", "pricing",
+                  "dashboard", "account", "user", "members", "password-reset"]
 
-    # Извлекаем только URL для HTML-тега
-    clean_url = selected_link.split(': ')[-1] if ': ' in selected_link else selected_link
-
-    SYSTEM_PROMPT = f"""You are an Elite SEO Copywriter and Tech Indie Hacker. Generate highly engaging SEO content for Luminoxia.com.
-
-CRITICAL SEO & LINK RULES:
-1. FOCUS KEYWORD: Invent a 2-4 word focus SEO keyword. 
-   - You MUST use this EXACT keyword in the VERY FIRST SENTENCE of the 'wp_post' HTML.
-   - You MUST also use it in 'seo_title', 'meta_desc', and at least 4 other times in the body.
-2. INTERNAL LINKING (STRICT LIMIT): 
-   - You are allowed to use EXACTLY ONE URL in this entire generation: {clean_url}
-   - Insert this EXACT link TWICE in the 'wp_post' HTML (once in the intro, once in the conclusion).
-   - NEVER use the <a> HTML tag more than twice in the entire document. ZERO external links. ZERO other internal links. Do not hallucinate URLs.
-3. LENGTH & STRUCTURE (ABSOLUTE MINIMUM 800 WORDS): AI models tend to write short text. You MUST overcome this by writing extremely detailed, long-form content. Use this exact structure:
-   - Introduction: 3 long paragraphs explaining the core problem and the pain point (150+ words).
-   - Main Body: 5 distinct H2 sections. EACH H2 section MUST contain at least 2 long paragraphs, detailed real-world examples, and a <ul> list (500+ words total).
-   - Technical Deep Dive: A detailed H3 section explaining exactly how the automation works step-by-step (150+ words).
-   - Conclusion: 2 long paragraphs summarizing the value and ending with the CTA link (100 words).
-
-CRITICAL DESIGN RULES FOR 'wp_post':
-1. Wrap the ENTIRE HTML content inside this exact div: 
-<div style="font-family: 'Poppins', sans-serif; color: #333333; line-height: 1.6;">
-2. Style your TWO link insertions strictly like this: 
-<a href="{clean_url}" style="color: #0056b3; text-decoration: underline; font-weight: bold;">Check out the tool here</a>
-
-CRITICAL YOUTUBE SHORTS RULES:
-1. NEVER use the phrase "link in bio". It is forbidden.
-2. ALWAYS use the exact phrase: "link in the channel profile".
-
-JSON format to return:
-- 'focus_keyword': Your chosen 2-4 word SEO keyword.
-- 'screen_title': 2-5 words, ALL CAPS.
-- 'script': 30-sec YouTube Shorts script. End with CTA: 'Get the tools at Luminoxia dot com, link in the channel profile!'. DO NOT USE THE WORD 'BIO'.
-- 'yt_title': Clickable title + 1 emoji.
-- 'yt_description': 2 sentences + tags (#webscraping #coldemail #tech #shorts).
-- 'seo_title': Clickable SEO Title (around 60 chars) including the EXACT 'focus_keyword'.
-- 'meta_desc': 150-character SEO description including the EXACT 'focus_keyword'.
-- 'wp_post': 800+ word SEO blog post HTML. MUST be extremely detailed and long."""
+    def is_valid(title, link):
+        text = (title + " " + link).lower()
+        return not any(w in text for w in STOP_WORDS)
 
     try:
-        response = client.chat.completions.create(
+        for endpoint in ["pages", "posts"]:
+            resp = requests.get(
+                f"{WP_URL}/wp-json/wp/v2/{endpoint}",
+                params={"status": "publish", "per_page": 100, "_fields": "title,link"},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                for item in resp.json():
+                    title = html.unescape(item.get("title", {}).get("rendered", ""))
+                    link = item.get("link", "")
+                    if is_valid(title, link):
+                        links.append({"title": title, "url": link})
+    except Exception as e:
+        logger.error(f"Error fetching links: {e}")
+
+    if not links:
+        links = [{"title": "Homepage", "url": f"{WP_URL}/"}]
+
+    logger.info(f"🔗 Loaded {len(links)} internal links for cross-linking.")
+    return links
+
+
+# ── Step 1: Generate unique topic via GPT ─────────────────
+def generate_unique_topic(existing_titles):
+    """Ask GPT to create a unique long-tail SEO topic that hasn't been covered."""
+    seeds = TOPIC_SEEDS.get(NICHE, TOPIC_SEEDS["b2b-lead-generation"])
+    seed_sample = random.sample(seeds, min(5, len(seeds)))
+
+    prompt = f"""You are an SEO strategist. Generate ONE unique blog post topic for the niche: "{NICHE}".
+
+INSPIRATION SEEDS (use as starting points, NOT exact topics):
+{json.dumps(seed_sample)}
+
+ALREADY PUBLISHED (do NOT repeat these or anything too similar):
+{json.dumps(list(existing_titles)[:30])}
+
+RULES:
+1. The topic must target a specific LONG-TAIL KEYWORD (4-8 words) that someone would Google.
+2. The topic must be EVERGREEN (useful for years, not news-dependent).
+3. Focus on actionable, how-to, or comparison angles.
+4. Return ONLY a JSON object: {{"topic": "...", "target_keyword": "..."}}
+"""
+
+    try:
+        resp = client.chat.completions.create(
             model="gpt-4o",
-            response_format={ "type": "json_object" },
+            response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Topic: {topic}"}
+                {"role": "system", "content": "You are an SEO expert. Reply only in valid JSON."},
+                {"role": "user", "content": prompt}
             ],
-            temperature=0.7
+            temperature=0.9
         )
-        content = json.loads(response.choices[0].message.content)
-        logger.info("AI text generated successfully.")
-
-        logger.info("Requesting image from DALL-E 3...")
-        img_prompt = f"A modern, minimalist blog cover image about {topic}. IT, cybersecurity, automation, web scraping theme. Tech aesthetic, neon accents, no text."
-        img_response = client.images.generate(
-            model="dall-e-3",
-            prompt=img_prompt,
-            size="1024x1024",
-            quality="standard",
-            n=1,
-        )
-        content["image_url"] = img_response.data[0].url
-        logger.info(f"Image URL generated: {content['image_url'][:50]}...")
-
-        return content
+        data = json.loads(resp.choices[0].message.content)
+        logger.info(f"🎯 Generated topic: {data.get('topic')} | Keyword: {data.get('target_keyword')}")
+        return data
     except Exception as e:
-        logger.error(f"Error during OpenAI generation: {e}")
+        logger.error(f"Topic generation failed: {e}")
         return None
 
 
+# ── Step 2: Generate full SEO article + video data ────────
+def generate_content(topic_data, internal_links):
+    """Generate a full SEO blog post + YouTube Shorts data."""
+    topic = topic_data["topic"]
+    keyword = topic_data["target_keyword"]
+
+    # Pick 2 random internal links for cross-linking
+    selected_links = random.sample(internal_links, min(2, len(internal_links)))
+    links_context = "\n".join([f"- {l['title']}: {l['url']}" for l in selected_links])
+
+    system_prompt = f"""You are an elite SEO copywriter for Luminoxia.com — a B2B toolkit and AI automation platform.
+
+TARGET KEYWORD: "{keyword}"
+You MUST use this EXACT keyword in:
+- The VERY FIRST sentence of the blog post
+- The seo_title
+- The meta_desc
+- At least 4 more times naturally throughout the body
+
+INTERNAL LINKS (use EXACTLY these 2 links, once each, naturally in the text):
+{links_context}
+
+BLOG POST RULES:
+1. Minimum 1000 words. Write detailed, expert-level content.
+2. Structure: Introduction (3 paragraphs) → 5 H2 sections (each with 2+ paragraphs and examples) → Technical deep-dive H3 → Conclusion with CTA
+3. Wrap all HTML in: <div style="font-family: 'Poppins', sans-serif; color: #333; line-height: 1.8;">
+4. Style links as: <a href="URL" style="color: #0056b3; text-decoration: underline; font-weight: bold;">anchor text</a>
+5. Use <ul> lists inside H2 sections where appropriate
+6. NO emoji in the blog post body
+7. Write in English
+
+YOUTUBE SHORTS RULES:
+1. script: 30-40 second narrator script, conversational, end with "Link in the channel profile — check it out!"
+2. screen_title: 2-5 words, ALL CAPS, punchy hook
+3. NEVER use "link in bio"
+
+Return JSON:
+- focus_keyword: the exact target keyword
+- seo_title: SEO title ~60 chars including keyword
+- meta_desc: ~155 chars including keyword  
+- wp_post: full HTML blog post (1000+ words)
+- screen_title: short screen title for video
+- script: YouTube Shorts narrator script
+- yt_title: clickable YouTube title + 1 emoji
+- yt_description: 2 sentences + hashtags"""
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Write about: {topic}"}
+            ],
+            temperature=0.7
+        )
+        data = json.loads(resp.choices[0].message.content)
+        logger.info("✅ Content generated successfully.")
+
+        # Generate featured image
+        logger.info("🎨 Generating featured image...")
+        img_resp = client.images.generate(
+            model="dall-e-3",
+            prompt=f"Modern minimalist blog header image about {topic}. Tech aesthetic, clean design, no text on image.",
+            size="1792x1024",
+            quality="standard",
+            n=1
+        )
+        data["image_url"] = img_resp.data[0].url
+        logger.info(f"🖼️ Image generated.")
+
+        return data
+    except Exception as e:
+        logger.error(f"Content generation failed: {e}")
+        return None
+
+
+# ── Step 3: Publish to WordPress via REST API ─────────────
 def publish_to_wordpress(data):
-    logger.info("--- STEP 3: Publishing to WordPress via Custom API ---")
-    custom_api_url = f"{WP_URL}/wp-json/luminoxia/v1/publish"
-    
+    """Publish post via custom WordPress snippet endpoint."""
+    logger.info("📝 Publishing to WordPress...")
+    WP_SECRET = os.getenv("WP_SECRET_TOKEN", "Xk9mW2vLpQ7nR4jTfB8sYd3hA6wZcE1gUoN5iMxKvJ0qDrFy2b")
     payload = {
-        "token": WP_SECRET_TOKEN,
-        "title": data.get("yt_title", "New Tech Article"),
+        "token": WP_SECRET,
+        "title": data.get("seo_title", "New Article"),
         "content": data.get("wp_post", ""),
         "image_url": data.get("image_url", ""),
         "focus_keyword": data.get("focus_keyword", ""),
         "meta_desc": data.get("meta_desc", ""),
-        "seo_title": data.get("seo_title", data.get("yt_title", ""))
+        "seo_title": data.get("seo_title", ""),
+        "category_id": WP_CATEGORY_ID
     }
-
     try:
-        logger.info("Sending payload to our secret backdoor...")
-        response = requests.post(custom_api_url, json=payload)
-        
-        if response.status_code == 200:
-            result = response.json()
-            logger.info(f"✅ Post successfully published! URL: {result.get('url')}")
+        resp = requests.post(f"{WP_URL}/wp-json/luminoxia/v1/publish", json=payload, timeout=60)
+        if resp.status_code == 200:
+            result = resp.json()
+            logger.info(f"✅ Published! URL: {result.get('url')}")
             return True
         else:
-            logger.error(f"❌ Failed to publish post. Status: {response.status_code}, Response: {response.text}")
+            logger.error(f"❌ Publish failed: {resp.status_code} — {resp.text}")
             return False
     except Exception as e:
-        logger.error(f"❌ WordPress Custom API error: {e}")
+        logger.error(f"❌ WordPress error: {e}")
         return False
 
+
+# ── Step 4: Write video data to Google Sheets ─────────────
 def write_to_sheets(data):
-    logger.info("--- STEP 4: Saving video data to Google Sheets ---")
+    """Append video row to Google Sheets for shorts_maker pipeline."""
+    logger.info("📊 Writing to Google Sheets...")
     try:
-        gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_FILE)
-        sh = gc.open(GOOGLE_SHEET_NAME)
-        ws = sh.worksheet(GOOGLE_WORKSHEET_NAME)
-        
-        # Считаем дату: текущее время + 24 часа
-        # Это обеспечит график "1 видео в день" автоматически
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+        gc = gspread.authorize(creds)
+        ws = gc.open(SHEET_NAME).worksheet(WORKSHEET_NAME)
+
         publish_time = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%d.%m.%Y %H:%M:%S")
 
         row = [
@@ -215,38 +304,51 @@ def write_to_sheets(data):
             data.get("script", ""),
             data.get("yt_title", ""),
             data.get("yt_description", ""),
-            "NEW",           # Статус
-            publish_time     # Автоматическая дата публикации
+            "NEW",
+            publish_time
         ]
-        
         ws.append_row(row)
-        logger.info(f"✅ Google Sheet updated! Scheduled for: {publish_time}")
+        logger.info(f"✅ Sheet updated! Video scheduled for: {publish_time}")
         return True
     except Exception as e:
         logger.error(f"❌ Google Sheets error: {e}")
         return False
 
+
+# ── Main ──────────────────────────────────────────────────
 def main():
     if not OPENAI_API_KEY:
-        logger.error("Missing OPENAI_API_KEY. Check .env")
+        logger.error("❌ OPENAI_API_KEY not set in .env")
+        return
+    if not WP_URL:
+        logger.error("❌ WP_URL not set in .env")
         return
 
-    # Шаг 0: Динамически собираем актуальные ссылки с сайта (с фильтрацией мусора)
-    live_links = fetch_live_links_from_wp()
+    # 1. Get existing posts to avoid duplicates
+    existing_titles = get_published_titles()
 
-    selected_topic = random.choice(TOPICS)
-    
-    # Передаем живые ссылки в генератор
-    content = generate_ai_content(selected_topic, live_links)
-    
-    if content:
-        publish_to_wordpress(content)
-        if write_to_sheets(content):
-            logger.info("🚀 SUPER-GENERATOR RUN COMPLETED SUCCESSFULLY! 🚀")
-        else:
-            logger.error("Failed to sync with Google Sheets.")
+    # 2. Generate unique topic
+    topic_data = generate_unique_topic(existing_titles)
+    if not topic_data:
+        return
+
+    # 3. Get internal links for cross-linking
+    internal_links = fetch_live_links()
+
+    # 4. Generate content
+    content = generate_content(topic_data, internal_links)
+    if not content:
+        return
+
+    # 5. Publish to WordPress
+    publish_to_wordpress(content)
+
+    # 6. Write video data to sheets
+    if write_to_sheets(content):
+        logger.info("🚀 CONTENT GENERATOR RUN COMPLETED SUCCESSFULLY!")
     else:
-        logger.error("Content generation failed.")
+        logger.error("Pipeline completed with errors.")
+
 
 if __name__ == "__main__":
     main()
