@@ -1,36 +1,49 @@
 import subprocess
-import time
 import sys
+import os
 
-# Список твоих боевых скриптов
-scripts = [
-    "pubmed_parser.py",
-    "tg_autoposter.py",
-    "shorts_maker.py",
-    "youtube_uploader.py"
-]
+def main():
+    # Список твоих боевых скриптов в строгом порядке
+    scripts = [
+        "content_generator.py",
+        "shorts_maker.py",
+        "youtube_uploader.py"
+    ]
 
-processes = []
+    print("\n" + "="*60)
+    print("🚀 STARTING LUMINOXIA PIPELINE (Cron Mode)")
+    print("="*60 + "\n")
 
-print("🚀 Запуск конвейера Biohack AI...")
+    overall_success = True
 
-try:
-    for script in scripts:
-        print(f" Wait... Запускаю {script}")
-        # Запускаем каждый скрипт как отдельный процесс
-        proc = subprocess.Popen([sys.executable, script])
-        processes.append(proc)
-        time.sleep(2) # Небольшая пауза, чтобы API не офигели от резких запросов
+    for i, script in enumerate(scripts, 1):
+        print(f"[{i}/{len(scripts)}] STAGE: {script}")
+        print("-" * 40)
+        
+        if not os.path.exists(script):
+            print(f"❌ ERROR: Script {script} not found! Skipping stage.")
+            overall_success = False
+            continue
 
-    print("\n✅ Все системы запущены. Конвейер работает!")
-    print("Нажми Ctrl+C, чтобы остановить все сразу.\n")
+        try:
+            # Запускаем скрипт и дожидаемся его завершения (линейный запуск)
+            result = subprocess.run([sys.executable, script], check=False)
+            
+            if result.returncode == 0:
+                print(f"✅ SUCCESS: {script} completed successfully.\n")
+            else:
+                print(f"⚠️ WARNING: {script} exited with code {result.returncode}.\n")
+                # overall_success = False # Don't fail the whole pipeline if one stage has issues (e.g. no articles found)
+        except Exception as e:
+            print(f"❌ CRITICAL ERROR running {script}: {e}\n")
+            overall_success = False
 
-    # Держим мастер-скрипт запущенным, пока работают дочерние
-    while True:
-        time.sleep(1)
+    print("="*60)
+    if overall_success:
+        print("🎉 PIPELINE EXECUTION FINISHED SUCCESSFULLY!")
+    else:
+        print("⚠️ PIPELINE FINISHED WITH ERRORS. CHECK LOGS.")
+    print("="*60 + "\n")
 
-except KeyboardInterrupt:
-    print("\n🛑 Останавливаю конвейер...")
-    for proc in processes:
-        proc.terminate()
-    print("👋 Все процессы завершены. До связи!")
+if __name__ == "__main__":
+    main()

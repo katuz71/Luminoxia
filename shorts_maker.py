@@ -1,25 +1,32 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import glob
 import os
 import PIL.Image
-# Патч для старых версий MoviePy, работающих с новым Pillow 10+
+# Patch for older MoviePy versions working with new Pillow 10+
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
 import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
-import os
 from openai import OpenAI
 
 load_dotenv(override=True)
 api_key = os.getenv("OPENAI_API_KEY", "").strip(" '\"\n\r")
 client = OpenAI(api_key=api_key)
 
-# Указываем путь к установленному ImageMagick
+# --- АВТОМАТИЧЕСКИЙ ВЫБОР ПУТИ К IMAGEMAGICK ---
 from moviepy.config import change_settings
-change_settings({"IMAGEMAGICK_BINARY": r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"})
-print("🎨 ImageMagick подключен: v7.1.2")
+if os.name == 'nt':
+    # Путь для локального теста на Windows
+    change_settings({"IMAGEMAGICK_BINARY": r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"})
+    print("🎨 ImageMagick connected (Windows Local Mode)")
+else:
+    # Путь для боевого Linux-сервера
+    change_settings({"IMAGEMAGICK_BINARY": "/usr/bin/convert"})
+    print("🎨 ImageMagick connected (Linux Server Mode)")
+# -----------------------------------------------
 
 from moviepy.editor import (
     AudioFileClip,
@@ -31,56 +38,17 @@ from moviepy.editor import (
 import moviepy.audio.fx.all as afx
 import moviepy.video.fx.all as vfx
 
-
 TARGET_W = 1080
 TARGET_H = 1920
 CLIP_DURATION = 4.0
-MUSIC_VOLUME_FACTOR = 0.1  # 10%
+MUSIC_VOLUME_FACTOR = 0.05
 MAX_WORDS_PER_SUBTITLE_PHRASE = 2
-CORRECT_BOT_NAME = "JobHack AI"
+CORRECT_BOT_NAME = "Luminoxia"
 CORRECTIONS = {
     "джобхак": CORRECT_BOT_NAME,
     "job hack": CORRECT_BOT_NAME,
 }
-def _pick_title_font() -> str:
-    """
-    Пытаемся использовать Montserrat-ExtraBold, если он установлен в системе,
-    иначе возвращаем Liberation-Sans-Bold.
-    """
-    fonts_dir = r"C:\Windows\Fonts"
-    if os.path.exists(fonts_dir):
-        patterns = [
-            os.path.join(fonts_dir, "*Montserrat*ExtraBold*.ttf"),
-            os.path.join(fonts_dir, "*Montserrat*ExtraBold*.otf"),
-            os.path.join(fonts_dir, "*Montserrat*ExtraBold*.ttc"),
-            os.path.join(fonts_dir, "*Montserrat*ExtraBold*.woff"),
-        ]
-        for p in patterns:
-            if glob.glob(p):
-                return "Montserrat-ExtraBold"
-    return "Liberation-Sans-Bold"
 
-
-def _pick_subtitle_font() -> str:
-    """
-    Подбираем максимально жирный шрифт для субтитров.
-    Сначала пытаемся Impact (часто есть в Windows), затем Arial Black,
-    иначе fallback на Liberation-Sans-Bold.
-    """
-    preferred_fonts = ["Impact", "Arial-Black", "Arial Black", "ArialBlack"]
-    fonts_dir = r"C:\Windows\Fonts"
-    if os.path.exists(fonts_dir):
-        for fn in preferred_fonts:
-            patterns = [
-                os.path.join(fonts_dir, f"*{fn}*.ttf"),
-                os.path.join(fonts_dir, f"*{fn}*.otf"),
-                os.path.join(fonts_dir, f"*{fn}*.woff"),
-                os.path.join(fonts_dir, f"*{fn}*.ttc"),
-            ]
-            for p in patterns:
-                if glob.glob(p):
-                    return fn.replace(" ", "-")
-    return "Liberation-Sans-Bold"
 
 
 def _apply_corrections(s: str) -> str:
@@ -88,34 +56,32 @@ def _apply_corrections(s: str) -> str:
         s = re.sub(re.escape(wrong), right, s, flags=re.IGNORECASE)
     return s
 
-
 def _split_text_into_chunks(text: str, chunk_size: int = 2) -> List[str]:
-    """Разбивает длинный текст на куски по 1-2 слова для субтитров."""
+    """Split long text into short chunks"""
     words = text.split()
     chunks = []
     for i in range(0, len(words), chunk_size):
         chunks.append(" ".join(words[i:i+chunk_size]))
     return chunks
 
-
 def _generate_tts_audio_and_words(
     text: str,
     title_text: str,
     audio_path: str,
-    voice: str = "onyx", # <-- ТУТ МОЖНО ПОМЕНЯТЬ ГОЛОС
+    voice: str = "nova",
 ) -> List[Dict[str, Any]]:
     """
-    Генерирует аудио через OpenAI TTS и равномерно распределяет тайминги титров с 0 до конца.
+    Generate TTS audio and word timings
     """
-    # 4) ЗАПЛАТКА: заменяем аббревиатуры перед озвучкой
-    text_to_speech = text.replace(" ТГ ", " Телеграм-канал ").replace(" TG ", " Телеграм-канал ")
+    # Cleanup text for TTS
+    text_to_speech = text.strip()
 
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)
     response = client.audio.speech.create(
-        model="tts-1-hd", # Улучшенное качество звука и битрейт
+        model="tts-1-hd",
         voice=voice,
         input=text_to_speech,
-        speed=1.05,       # Немного ускоряем Onyx, чтобы убрать медлительность и добавить энергии 
+        speed=1.05,
         response_format="mp3"
     )
     response.write_to_file(audio_path)
@@ -127,13 +93,11 @@ def _generate_tts_audio_and_words(
     total_duration = float(audio_clip.duration)
     audio_clip.close()
 
-    # Текст для субтитров: строго тот же текст, что читает диктор (text), разбиваем по 1-2 слова
     chunks = _split_text_into_chunks(text, 2)
         
     if not chunks:
         return []
 
-    # Распределение времени для титров от 0 до конца
     available_duration = total_duration
     current_start = 0.0
 
@@ -158,27 +122,21 @@ def _generate_tts_audio_and_words(
 
     return word_items
 
-
 def _correct_bot_name_in_text(s: str) -> str:
     """
-    Нормализует вариации названия бота в единый вид: `CORRECT_BOT_NAME`.
+    Normalize bot name variations
     """
     if not s:
         return s
 
-    # Замена латиницей: jobhack / job hack / job-hack
     s = re.sub(r"(?i)\bjob\s*-?\s*hack\b", "JobHack", s)
-    # Замена кириллицей: Джобхак / Джоб хак
     s = re.sub(r"(?i)\bджоб\s*-?\s*хак\b", "JobHack", s)
-    # Нормализуем пробел перед AI
     s = re.sub(r"(?i)\bJobHack\s+AI\b", CORRECT_BOT_NAME, s)
     return s
 
-
 def _fit_to_frame(clip: VideoFileClip, target_w: int, target_h: int) -> VideoFileClip:
     """
-    Приводит видео к нужному кадру (9:16): сначала масштабируем “вперёд” (cover),
-    затем обрезаем по центру до target_w x target_h.
+    Fit video to 9:16 frame by cropping
     """
     scale = max(target_w / clip.w, target_h / clip.h)
     resized = clip.resize(scale)
@@ -191,7 +149,6 @@ def _fit_to_frame(clip: VideoFileClip, target_w: int, target_h: int) -> VideoFil
         height=target_h,
     )
     return cropped
-
 
 def _list_background_videos(bg_folder: str) -> List[str]:
     if not os.path.exists(bg_folder):
@@ -214,15 +171,11 @@ def _build_dynamic_background(
     target_h: int,
 ) -> Tuple[VideoFileClip, List[VideoFileClip], List[VideoFileClip], List[VideoFileClip]]:
     """
-    Собирает B-roll принудительными отрезками ровно по `CLIP_DURATION` секунд.
-    На каждой итерации:
-      - случайно выбирается видео из `bg_folder`
-      - если оно длиннее - делается `subclip()` на 4 секунды с случайным `start_time`
-      - если короче - видео зацикливается до 4 секунд (`vfx.loop`)
+    Build b-roll segments
     """
     paths = _list_background_videos(bg_folder)
     if not paths:
-        raise RuntimeError("Папка 'backgrounds' пуста или не содержит mp4.")
+        raise RuntimeError("Backgrounds directory is empty or missing mp4 files.")
 
     segments: List[VideoFileClip] = []
     base_clips: List[VideoFileClip] = []
@@ -231,13 +184,13 @@ def _build_dynamic_background(
     total_duration = 0.0
     clip_duration = float(CLIP_DURATION)
     if clip_duration <= 0:
-        raise ValueError("`CLIP_DURATION` должен быть > 0.")
+        raise ValueError("CLIP_DURATION must be > 0.")
 
     while total_duration < float(target_duration):
         bg_path = random.choice(paths)
         base_clip = VideoFileClip(bg_path)
         
-        # ОПТИМИЗАЦИЯ ПАМЯТИ: Принудительный ресайз гигантских видео
+        # Memory optimization: resize huge videos
         if base_clip.h > target_h or base_clip.w > target_w:
             base_clip = base_clip.resize(height=target_h)
             
@@ -255,11 +208,9 @@ def _build_dynamic_background(
         segments.append(seg)
         total_duration += clip_duration
 
-    # Метод compose гарантирует корректную склейку, если где-то остались отличия размеров.
     from moviepy.editor import concatenate_videoclips
 
     final_background = concatenate_videoclips(segments, method="compose")
-    # Аккуратно подрезаем фон ровно под длительность аудио.
     final_background = final_background.subclip(0, float(target_duration))
     final_background = final_background.set_duration(float(target_duration))
     return final_background, base_clips, fitted_clips, segments
@@ -267,7 +218,7 @@ def _build_dynamic_background(
 
 def _list_music_files(music_folder: str) -> List[str]:
     if not os.path.exists(music_folder):
-        print(f"⚠️ Папка для музыки не найдена, создаю: {music_folder}")
+        print(f"Directory not found, creating: {music_folder}")
         os.makedirs(music_folder, exist_ok=True)
         return []
 
@@ -286,7 +237,7 @@ def _prepare_bg_music(
     volume_factor: float,
 ) -> AudioFileClip:
     """
-    Подгоняет фоновую музыку под длительность диктора и снижает громкость.
+    Match background music duration to voiceover and reduce volume.
     """
     bg_music = AudioFileClip(music_path)
 
@@ -306,29 +257,26 @@ async def make_short(
     output_filename: str = "assets/ready_videos/promo_subs.mp4",
     bg_folder: str = "assets/backgrounds",
     music_folder: str = "assets/music",
-    voice: str = "onyx", # <-- ДЕФОЛТНЫЙ ГОЛОС ('onyx', 'alloy', 'echo', 'nova') 
+    voice: str = "nova",
     max_words_per_subtitle_phrase: int = MAX_WORDS_PER_SUBTITLE_PHRASE,
 ) -> None:
-    # ОДНА финальная строка для TTS (и аудио, и субтитров):
-    # - нормализуем варианты названия
-    # - применяем коррекции
+    # Final cleanup of TTS text
     text = _apply_corrections(_correct_bot_name_in_text(text))
     title_text = _apply_corrections(_correct_bot_name_in_text(title_text))
     
     yt_title_clean = yt_title.strip()
     if not yt_title_clean:
-        # Fallback: если yt_title пустой, используем первую строчку из Screen Titles
+        # Fallback to Screen Titles
         yt_title_clean = title_text.split('\n')[0].strip()
 
-    # Очистка и форматирование разметки
+    # Clean markdown
     text = text.replace('*', '').replace('_', '')
     title_text = title_text.replace('*', '').replace('_', '').replace('\\n', '\n').upper()
     yt_title_clean = yt_title_clean.replace('*', '').replace('_', '').upper()
     if max_words_per_subtitle_phrase < 1:
-        raise ValueError("`max_words_per_subtitle_phrase` должен быть >= 1.")
+        raise ValueError("max_words_per_subtitle_phrase must be >= 1.")
 
-    # 1) Озвучка (OpenAI TTS -> temp_audio.mp3)
-    print("🎙 Генерируем нейроголос...")
+    print("Generating AI voice...")
     word_items = _generate_tts_audio_and_words(
         text=text,
         title_text=title_text,
@@ -350,28 +298,26 @@ async def make_short(
     subtitle_clips: List[TextClip] = []
 
     try:
-        # 3) Достаем длительность аудио
-        print("🎬 Начинаем монтаж...")
+        print("Starting montage...")
         audio = AudioFileClip("temp/voice.mp3")
-        audio = audio.fx(afx.volumex, 1.5) # БАЛАНС ЗВУКА: Увеличиваем громкость диктора (в 1.5 раза)
+        audio = audio.fx(afx.volumex, 1.5)
         audio_duration = float(audio.duration)
 
-        # 3.1) Проверка медиа-файлов
         music_files = _list_music_files(music_folder)
         paths_bg = _list_background_videos(bg_folder)
 
-        print(f"\n--- ПРОВЕРКА (Debug) ---")
-        print(f"Путь к фонам: {os.path.abspath(bg_folder)}")
-        print(f"Найдено видео: {len(paths_bg)}")
-        print(f"Найдено треков: {len(music_files)}")
+        print(f"\n--- DEBUG INFO ---")
+        print(f"Backgrounds path: {os.path.abspath(bg_folder)}")
+        print(f"Found videos: {len(paths_bg)}")
+        print(f"Found music tracks: {len(music_files)}")
         print(f"------------------------\n")
 
         if not paths_bg:
-            raise ValueError(f"Папка с фонами пуста! Рендер невозможен.")
+            raise ValueError(f"Backgrounds folder is empty. Render impossible.")
 
         if music_files:
             music_path = random.choice(music_files)
-            print(f"🎵 Выбрана музыка: {music_path}")
+            print(f"Selected music: {music_path}")
             bg_music = _prepare_bg_music(
                 music_path=music_path,
                 target_duration=audio_duration,
@@ -379,10 +325,9 @@ async def make_short(
             )
             mixed_audio = CompositeAudioClip([audio, bg_music])
         else:
-            print("⚠️ Папка с музыкой пуста. Генерируем только с голосом.")
+            print("Music folder is empty. Generating only with voice.")
             mixed_audio = audio
 
-        # 4) Динамический фон (микс фонов до длительности аудио)
         background, base_clips, fitted_clips, segments = _build_dynamic_background(
             bg_folder=bg_folder,
             target_duration=audio_duration,
@@ -391,25 +336,24 @@ async def make_short(
         )
         background_clip = background
 
-        # 5) ЗАГОЛОВОК (Hook из row[0] / Screen Title)
+        # Header clipping
         title_clip = TextClip(
-            title_text,        # Текст хука (Screen Title)
+            title_text,
             method="caption",
-            fontsize=70,       # Размер 70
-            color="white",     # СТРОГО БЕЛЫЙ
+            fontsize=70,
+            color="white",
             stroke_color="black",
-            stroke_width=3,    # Черная обводка для читаемости
-            font='Arial-Bold', # Жирный шрифт
-            size=(800, None),  # Ширина 800
+            stroke_width=3,
+            font='DejaVu-Sans-Bold',
+            size=(800, None),
         )
-        # Устанавливаем появление от 0 до 3 секунд в верхней части (жесткие 200px)
         title_clip = (
-            title_clip.set_position(lambda t: ('center', 200))
+            title_clip.set_position(("center", 0.25), relative=True)
             .set_start(0.0)
             .set_end(3.0)
         )
 
-        # 6) Динамические субтитры по таймингам (от 0-й секунды)
+        # Dynamic subtitles
         filtered_items = []
         for w in word_items:
             start = w["start"]
@@ -419,9 +363,9 @@ async def make_short(
             filtered_items.append({"text": w["text"], "start": start, "end": end})
         word_items = filtered_items
 
-        print(f"Извлечено субтитров (word_items): {len(word_items)}")
+        print(f"Extracted subtitles: {len(word_items)}")
         if not word_items:
-            print("⚠️ ВНИМАНИЕ: Список word_items пуст! Субтитры не будут сгенерированы.")
+            print("WARNING: word_items is empty! Subtitles will not be generated.")
 
         for item in word_items:
             start_time = float(item["start"])
@@ -435,41 +379,41 @@ async def make_short(
 
             tc = TextClip(
                 phrase_text,
-                font='Arial-Bold',    
-                fontsize=85,          # Крупный шрифт (около 80-90)
-                color='yellow',       # СТРОГО ЖЕЛТЫЙ
+                font='DejaVu-Sans-Bold',    
+                fontsize=85,
+                color='yellow',
                 stroke_color='black', 
-                stroke_width=3,       # Жирная черная обводка
-                method='caption',     # Обязательно method='caption'
+                stroke_width=3,
+                method='caption',
                 align='center',
-                size=(800, None)      # Ширина 800
+                size=(800, None)
             )
 
-            # Позиция: ЖЕСТКАЯ абсолютная привязка вниз экрана через лямбду (1600px - нижняя треть)
-            tc = tc.set_start(start_time).set_end(start_time + duration).set_position(lambda t: ('center', 1600))
+            tc = tc.set_start(start_time).set_end(start_time + duration).set_position(('center', 0.75), relative=True)
 
             subtitle_clips.append(tc)
 
-        print(f"Итоговый текст для субтитров: {[w['text'] for w in word_items]}")
+        print(f"Final subtitle text: {[w['text'] for w in word_items]}")
         
-        # 7) Компоузинг: фон + заголовок + субтитры + аудио
         final_video = CompositeVideoClip(
             [background, title_clip] + subtitle_clips,
             size=(TARGET_W, TARGET_H),
         ).set_audio(mixed_audio)
 
-        print("⏳ Рендерим финальный файл (может занять пару минут)...")
+        print("Rendering final video file...")
+        # Сохранение видео с полоской прогресса
         final_video.write_videofile(
             output_filename,
-            fps=30,
+            fps=24,
+            threads=2,
             codec="libx264",
             audio_codec="aac",
-            preset="ultrafast",  # 🚀 Главный спаситель памяти!
-            threads=2,           # Повышаем до 2 для оптимальной производительности и низкого RAM
-            logger=None          # Отключаем ползунок, чтобы не грузить терминал
+            preset="medium",
+            bitrate="5000k",
+            logger="bar"  
         )
    
-        # ПРИНУДИТЕЛЬНАЯ ОЧИСТКА РАМ: закрываем клипы после рендера сразу
+        # Close clips
         try:
             if final_video: final_video.close()
             if audio: audio.close()
@@ -478,10 +422,9 @@ async def make_short(
         except Exception:
             pass
 
-        print(f"✅ Готово! Твое видео сохранено как: {output_filename}")
+        print(f"Done! Video saved as: {output_filename}")
 
     finally:
-        # Важно: на Windows MoviePy/FFMPEG любит ругаться, если не закрыть клипы.
         for c in subtitle_clips:
             try:
                 c.close()
@@ -519,7 +462,6 @@ async def make_short(
             except Exception:
                 pass
 
-        # `segments` и `background` завязаны на источники, поэтому закрываем после рендера.
         for s in segments:
             try:
                 s.close()
@@ -544,7 +486,6 @@ async def make_short(
             except Exception:
                 pass
 
-        # temp/voice.mp3 всегда чистим в конце.
         if os.path.exists("temp/voice.mp3"):
             try:
                 os.remove("temp/voice.mp3")
@@ -559,9 +500,8 @@ async def make_short(
 
 
 if __name__ == "__main__":
-    # ВНИМАНИЕ: замените значение на реальное имя таблицы.
-    SPREADSHEET_NAME = "Jobhakai"
-    WORKSHEET_NAME = "Biohack"
+    SPREADSHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Luminoxia")
+    WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Luminoxia")
     CREDENTIALS_JSON_PATH = "credentials.json"
     READY_VIDEOS_DIR = "assets/ready_videos"
 
@@ -588,18 +528,16 @@ if __name__ == "__main__":
         tasks = []
         debug_statuses = []
         
-        # Индекс 5-й колонки для статуса (1-based index 5 = 5 column, in lists it's 4)
         status_col_idx = 5
         
         for row_number, row in enumerate(values, start=1):
             if row_number == 1:
-                continue # Строго пропускаем заголовок (Строку 1)
+                continue
 
             status = str(row[4]).strip().upper() if len(row) > 4 else ""
-            debug_statuses.append(f"Строка {row_number}: '{status}'")
+            debug_statuses.append(f"Row {row_number}: '{status}'")
 
-            # Берём только POSTED
-            if status != "POSTED":
+            if status != "NEW":
                 continue
 
             screen_title = (row[0] if len(row) > 0 else "").strip()
@@ -607,13 +545,12 @@ if __name__ == "__main__":
             yt_title = (row[2] if len(row) > 2 else "").strip()
             yt_description = (row[3] if len(row) > 3 else "").strip()
 
-            # Минимальные проверки
             if not screen_title or not script:
                 continue
 
             tasks.append(
                 {
-                    "row_index": row_number,  # 1-based индекс для update_cell
+                    "row_index": row_number,
                     "status_col_idx": status_col_idx,
                     "screen_title": screen_title,
                     "script": script,
@@ -621,23 +558,26 @@ if __name__ == "__main__":
                     "yt_description": yt_description,
                 }
             )
-            print(f"✅ Найдена первая строка в очереди! (Строка {row_number})")
-            break # Берем строго ПЕРВУЮ ПОДХОДЯЩУЮ строку
+            print(f"Found an active row in the queue! (Row {row_number})")
+            break
 
         if not tasks:
-            print(f"🔍 Отладка статусов для POSTED: {', '.join(debug_statuses)}")
+            print(f"Debug statuses for POSTED: {', '.join(debug_statuses)}")
 
         return ws, tasks
 
     async def _run_tasks():
         ws, tasks = _load_tasks_from_google_sheet()
         if not tasks:
-            print("Нет задач: все строки уже имеют заполненный Status.")
+            print("No new tasks found: all rows have a Status.")
             return
 
         os.makedirs(READY_VIDEOS_DIR, exist_ok=True)
 
-        print(f"Найдено задач для генерации: {len(tasks)}")
+        print(f"Found tasks for generation: {len(tasks)}")
+
+        import random
+        AVAILABLE_VOICES = ["nova", "shimmer", "onyx", "alloy"]
 
         for task in tasks:
             row_index = task["row_index"]
@@ -647,28 +587,35 @@ if __name__ == "__main__":
 
             output_filename = f"{READY_VIDEOS_DIR}/video_{row_index}.mp4"
             if os.path.exists(output_filename):
-                print(f"⏭ Видео {output_filename} уже существует. Пропускаю...")
+                print(f"Video {output_filename} already exists. Skipping...")
                 continue
 
-            print(f"--- Row {row_index}: рендерим {output_filename}")
+            selected_voice = random.choice(AVAILABLE_VOICES)
+
+            print(f"--- Row {row_index}: rendering {output_filename} with voice '{selected_voice}'")
             try:
-                await make_short(script, screen_title, yt_title=task.get("yt_title", ""), output_filename=output_filename)
+                await make_short(
+                    text=script, 
+                    title_text=screen_title, 
+                    yt_title=task.get("yt_title", ""), 
+                    output_filename=output_filename,
+                    voice=selected_voice
+                )
             except Exception as e:
-                print(f"❌ Row {row_index}: ошибка рендера: {e}")
+                print(f"Row {row_index} final render error: {e}")
                 continue
 
-            # После успешного рендера помечаем DONE в динамически вычисленной колонке Status
             import time
             try:
                 ws.update_cell(row_index, status_col_idx, "VIDEO_DONE")
-                print(f"✅ Статус VIDEO_DONE записан в таблицу (строка {row_index}).")
+                print(f"Status VIDEO_DONE recorded (row {row_index}).")
             except Exception as e:
-                print(f"⚠️ Google Таблицы не ответили (ошибка 500). Ждем 5 секунд и пробуем снова...")
+                print(f"Google Sheets timeout (500). Waiting 5 seconds and retrying...")
                 time.sleep(5)
                 try:
                     ws.update_cell(row_index, status_col_idx, "VIDEO_DONE")
-                    print(f"✅ Статус VIDEO_DONE записан в таблицу со второй попытки (строка {row_index}).")
+                    print(f"Status VIDEO_DONE recorded on second attempt (row {row_index}).")
                 except Exception as e_retry:
-                    print(f"❌ Не удалось обновить статус в таблице: {e_retry}. Идем дальше!")
+                    print(f"Failed to update status: {e_retry}. Continuing!")
 
     asyncio.run(_run_tasks())
